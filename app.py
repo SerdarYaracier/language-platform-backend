@@ -1,0 +1,43 @@
+import os
+from flask import Flask, jsonify
+from flask_cors import CORS
+from dotenv import load_dotenv
+from supabase import create_client, Client
+
+# .env dosyasındaki ortam değişkenlerini yükler
+load_dotenv()
+
+# --- Uygulama ve Servislerin Başlatılması ---
+
+# Flask uygulamasını oluşturur
+app = Flask(__name__)
+# Frontend'den gelecek isteklere izin vermek için CORS'u etkinleştirir
+CORS(app)
+
+from routes.extensions import supabase
+
+
+
+# routes/games.py dosyasından 'games_bp' Blueprint'ini import et
+from routes.games import games_bp
+
+# 'games_bp' Blueprint'ini uygulamaya kaydet.
+# Artık games.py içindeki tüm route'lar aktif.
+app.register_blueprint(games_bp)
+
+
+
+
+# --- Ana Test Route'u ---
+
+# Sunucunun ayakta olup olmadığını kontrol etmek için basit bir endpoint
+@app.route("/")
+def index():
+    return jsonify(status="API is up and running!")
+
+
+# Bu blok, 'python app.py' komutuyla direkt çalıştırma için kullanılır.
+# 'flask run' komutuyla çalıştırdığımızda bu bloğa ihtiyaç duyulmaz ama
+# standart bir pratiktir.
+if __name__ == '__main__':
+    app.run(debug=True)
