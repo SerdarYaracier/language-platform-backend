@@ -245,4 +245,33 @@ def get_mixed_rush_question():
 
     except Exception as e:
         print(f"An error occurred in get_mixed_rush_question: {e}")
-        return jsonify(error="An internal server error occurred."), 500    
+        return jsonify(error="An internal server error occurred."), 500   
+    
+@games_bp.route("/<game_slug>/<category_slug>/levels")
+def get_levels_for_category(game_slug, category_slug):
+    """Belirli bir oyun ve kategori için mevcut olan tüm seviyeleri listeler."""
+    try:
+        # Oyun ve kategori ID'lerini bul
+        game_type_response = supabase.table('game_types').select('id').eq('slug', game_slug).single().execute()
+        category_response = supabase.table('categories').select('id').eq('slug', category_slug).single().execute()
+
+        if not game_type_response.data or not category_response.data:
+            return jsonify(error="Game or Category not found"), 404
+        
+        game_type_id = game_type_response.data['id']
+        category_id = category_response.data['id']
+
+        # game_items tablosundan bu oyuna ve kategoriye ait olan tüm benzersiz seviyeleri çek
+        # DISTINCT, tekrar eden seviye numaralarını (1, 1, 1, 1) engeller ve sadece [1] döndürür.
+        levels_response = supabase.table('game_items').select('level', count='exact').eq('game_type_id', game_type_id).eq('category_id', category_id).execute()
+        
+        # Gelen veriden sadece seviye numaralarını alıp, benzersiz bir liste oluşturuyoruz
+        if levels_response.data:
+            unique_levels = sorted(list(set([item['level'] for item in levels_response.data])))
+            return jsonify(unique_levels)
+        else:
+            return jsonify([])
+
+    except Exception as e:
+        print(f"An error occurred in get_levels_for_category: {e}")
+        return jsonify(error="An internal server error occurred."), 500     
