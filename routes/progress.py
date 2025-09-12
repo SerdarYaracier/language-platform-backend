@@ -41,67 +41,151 @@ def _get_user_from_auth_header(req):
 
 @progress_bp.route('/submit-score', methods=['POST'])
 def submit_score():
-    # Authenticate
     user, err = _get_user_from_auth_header(request)
     if err:
         return err
 
     try:
         data = request.get_json() or {}
-        print(f"[progress] submit-score request json: {data}")
-        print(f"[progress] Authorization header sample: {str(request.headers.get('Authorization'))[:80]}")
         level = data.get('level')
-        # accept several possible param names from frontend
-        category_slug = data.get('categorySlug') or data.get('category') or data.get('category_slug') or data.get('categoryId')
+        category_slug = data.get('categorySlug') or data.get('category')
 
         if level is None or not category_slug:
             return jsonify(error="Missing required fields: level, categorySlug"), 400
 
-        try:
-            points_to_add = POINTS_MAP.get(int(level), 0)
-        except Exception:
-            points_to_add = 0
+        points_to_add = POINTS_MAP.get(int(level), 0)
 
         # Find category id
-        try:
-            cat_res = supabase.table('categories').select('id').eq('slug', category_slug).execute()
-        except Exception as e:
-            print(f"[progress] category lookup failed: {e}")
-            return jsonify(error="Failed to lookup category"), 500
-
-        if not getattr(cat_res, 'data', None):
-            return jsonify(error=f"Category with slug '{category_slug}' not found."), 404
+        cat_res = supabase.table('categories').select('id').eq('slug', category_slug).execute()
+        if not cat_res.data:
+            return jsonify(error=f"Category '{category_slug}' not found"), 404
         category_id = cat_res.data[0]['id']
 
-        # upsert category progress (best-effort)
-        try:
-            upsert_res = supabase.rpc('upsert_category_progress', {
-                'p_user_id': user.id,
-                'p_category_id': category_id,
-                'p_score_increment': points_to_add
-            }).execute()
-            print(f"[progress] upsert_category_progress: {upsert_res}")
-        except Exception as e:
-            print(f"[progress] upsert_category_progress failed: {e}")
-
-        # Bir kategoriye puan eklendikten hemen sonra...
-        try:
-            recalc_res = supabase.rpc('recalculate_total_score_for_user', {
-                'p_user_id': user.id
-            }).execute()
-            print(f"[progress] recalculate_total_score_for_user: {recalc_res}")
-        except Exception as e:
-            print(f"[progress] recalculate_total_score_for_user failed: {e}")
-
-        # check and award achievements (best-effort)
-        try:
-            ach_res = supabase.rpc('check_and_award_achievements_for_user', {'p_user_id': user.id}).execute()
-            print(f"[progress] check_and_award_achievements_for_user: {ach_res}")
-        except Exception as e:
-            print(f"[progress] achievements RPC failed: {e}")
+        # Use Supabase RPCs - let them handle the complexity
+        supabase.rpc('upsert_category_progress', {
+            'p_user_id': user.id,
+            'p_category_id': category_id,
+            'p_score_increment': points_to_add
+        }).execute()
+        
+        supabase.rpc('recalculate_total_score_for_user', {'p_user_id': user.id}).execute()
+        supabase.rpc('check_and_award_achievements_for_user', {'p_user_id': user.id}).execute()
 
         return jsonify(message="Score updated successfully"), 200
 
     except Exception as e:
         print(f"Error in submit_score: {e}")
-        return jsonify(error="An internal server error occurred"), 500
+        return jsonify(error="Internal server error"), 500
+
+
+@progress_bp.route('/submit-mixed-rush-question', methods=['POST'])
+def submit_mixed_rush_question():
+    """Tek bir Mixed Rush sorusu için puan ekleme (level + categorySlug gerekli)"""
+    user, err = _get_user_from_auth_header(request)
+    if err:
+        return err
+
+    try:
+        data = request.get_json() or {}
+        level = data.get('level')
+        category_slug = data.get('categorySlug') or data.get('category')
+        
+        if level is None or not category_slug:
+            return jsonify(error="Missing required fields: level, categorySlug"), 400
+
+        points_to_add = POINTS_MAP.get(int(level), 0)
+        
+        # Find category id
+        cat_res = supabase.table('categories').select('id').eq('slug', category_slug).execute()
+        if not cat_res.data:
+            return jsonify(error=f"Category '{category_slug}' not found"), 404
+        category_id = cat_res.data[0]['id']
+
+        # Use Supabase RPCs - simple and reliable
+        supabase.rpc('upsert_category_progress', {
+            'p_user_id': user.id,
+            'p_category_id': category_id,
+            'p_score_increment': points_to_add
+        }).execute()
+        
+        supabase.rpc('recalculate_total_score_for_user', {'p_user_id': user.id}).execute()
+        supabase.rpc('check_and_award_achievements_for_user', {'p_user_id': user.id}).execute()
+
+        return jsonify(message=f"Mixed Rush question scored: +{points_to_add} points"), 200
+
+    except Exception as e:
+        print(f"Error in submit_mixed_rush_question: {e}")
+        return jsonify(error="Internal server error"), 500
+
+
+@progress_bp.route('/submit-mixed-rush-final', methods=['POST'])
+def submit_mixed_rush_final():
+    """Mixed Rush oyunu bitiminde final score kaydetme"""
+    user, err = _get_user_from_auth_header(request)
+    if err:
+        return err
+
+    try:
+        data = request.get_json() or {}
+        final_score = data.get('score') or data.get('finalScore')
+        
+        if final_score is None:
+            return jsonify(error="Missing required field: score"), 400
+
+        final_score = int(final_score)
+        if final_score < 0:
+            return jsonify(error="Score cannot be negative"), 400
+
+        # Use the existing RPC - much simpler and more reliable!
+        result = supabase.rpc('update_mixed_rush_highscore', {
+            'p_user_id': user.id,
+            'p_new_score': final_score
+        }).execute()
+        
+        # The RPC handles the GREATEST logic, we just need to return appropriate message
+        return jsonify(message=f"Mixed Rush final score: {final_score}"), 200
+
+    except Exception as e:
+        print(f"Error in submit_mixed_rush_final: {e}")
+        return jsonify(error="Internal server error"), 500
+
+
+@progress_bp.route('/submit-mixed-rush-score', methods=['POST'])
+def submit_mixed_rush_score():
+    """Geriye uyumluluk için - eski frontend'i destekler"""
+    user, err = _get_user_from_auth_header(request)
+    if err:
+        return err
+
+    try:
+        data = request.get_json() or {}
+        level = data.get('level')
+        category_slug = data.get('categorySlug') or data.get('category')
+        
+        # Eğer level ve category varsa, bireysel soru puanlaması
+        if level is not None and category_slug:
+            return submit_mixed_rush_question()
+        
+        # Değilse final score
+        final_score = data.get('score')
+        if final_score is None:
+            return jsonify(error="Missing required field: 'score'"), 400
+
+        # 1. Veritabanındaki hazır ve optimize edilmiş RPC fonksiyonunu kullanarak en yüksek skoru güncelle.
+        supabase.rpc('update_mixed_rush_highscore', {
+            'p_user_id': user.id,
+            'p_new_score': int(final_score)
+        }).execute()
+        
+        # --- KRİTİK DEĞİŞİKLİK BURADA ---
+        # 2. YENİ: Skor güncellendikten sonra madalya kontrolünü tetikle.
+        # Bu, 'mixed_rush_highscore' trigger türüne sahip madalyaların kazanılmasını sağlar.
+        supabase.rpc('check_and_award_achievements_for_user', {
+            'p_user_id': user.id
+        }).execute()
+
+        return jsonify(message="Mixed Rush highscore updated successfully"), 200
+
+    except Exception as e:
+        print(f"Error in submit_mixed_rush_score: {e}")
+        return jsonify(error="Internal server error"), 500

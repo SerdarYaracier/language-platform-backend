@@ -208,37 +208,49 @@ def get_mixed_rush_question():
         game_data = response.data[0]
 
         # Frontend'in beklediği formata dönüştürüyoruz
+        # Ensure we include the `level` so Mixed Rush frontend can send per-question scoring
+        question_level = game_data.get('game_level') or game_data.get('level') or 1
         formatted_data = {
             "type": game_data.get('game_type'),
-            "data": game_data.get('game_content')
+            "data": game_data.get('game_content'),
+            "level": int(question_level)
         }
         
         # Fonksiyondan dönen 'content' JSON'ı, diğer oyunların beklediği
         # 'data' anahtarı altına yerleştiriyoruz.
         if formatted_data['type'] == 'sentence-scramble':
             correct_sentence = formatted_data['data'].get(request.args.get('lang', 'en'))
+            if not correct_sentence:
+                return jsonify(error="Content language missing"), 404
             words = correct_sentence.split()
             random.shuffle(words)
             formatted_data['data'] = { "shuffled_words": words, "correct_sentence": correct_sentence }
         
         elif formatted_data['type'] == 'image-match':
             lang = request.args.get('lang', 'en')
-            options = formatted_data['data']['options'][lang]
+            options = (formatted_data['data'].get('options') or {}).get(lang)
+            answer = (formatted_data['data'].get('answer') or {}).get(lang)
+            if not all([options, answer, formatted_data['data'].get('image_url')]):
+                return jsonify(error=f"Content for language '{lang}' is incomplete for image-match."), 404
             random.shuffle(options)
             formatted_data['data'] = {
                 "image_url": formatted_data['data']['image_url'],
                 "options": options,
-                "answer": formatted_data['data']['answer'][lang]
+                "answer": answer
             }
         
         elif formatted_data['type'] == 'fill-in-the-blank':
             lang = request.args.get('lang', 'en')
-            options = formatted_data['data']['options'][lang]
+            options = (formatted_data['data'].get('options') or {}).get(lang)
+            sentence_parts = (formatted_data['data'].get('sentence_parts') or {}).get(lang)
+            answer = (formatted_data['data'].get('answer') or {}).get(lang)
+            if not all([sentence_parts, options, answer]):
+                return jsonify(error=f"Content for language '{lang}' is incomplete for fill-in-the-blank."), 404
             random.shuffle(options)
             formatted_data['data'] = {
-                "sentence_parts": formatted_data['data']['sentence_parts'][lang],
+                "sentence_parts": sentence_parts,
                 "options": options,
-                "answer": formatted_data['data']['answer'][lang]
+                "answer": answer
             }
 
         return jsonify(formatted_data)
