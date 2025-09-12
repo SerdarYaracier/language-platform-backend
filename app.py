@@ -4,6 +4,7 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
+
 # .env dosyasındaki ortam değişkenlerini yükler
 load_dotenv()
 
@@ -14,16 +15,17 @@ app = Flask(__name__)
 # Frontend'den gelecek isteklere izin vermek için CORS'u etkinleştirir
 CORS(app)
 
-from routes.extensions import supabase
-
-
-
 # routes/games.py dosyasından 'games_bp' Blueprint'ini import et
 from routes.games import games_bp
-
+from routes.profile import profile_bp
+from routes.progress import progress_bp 
+from routes.achievements import achievements_bp
 # 'games_bp' Blueprint'ini uygulamaya kaydet.
 # Artık games.py içindeki tüm route'lar aktif.
 app.register_blueprint(games_bp)
+app.register_blueprint(profile_bp)
+app.register_blueprint(progress_bp)
+app.register_blueprint(achievements_bp)
 
 
 
