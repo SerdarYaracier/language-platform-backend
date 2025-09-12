@@ -1,74 +1,57 @@
-from flask import Blueprint, jsonify, request, current_app
+from flask import Blueprint, jsonify, request
 from extensions import supabase
 
 profile_bp = Blueprint('profile_bp', __name__, url_prefix='/api/profile')
 
+# GİRİŞ YAPMIŞ KULLANICININ KENDİ PROFİLİ
 @profile_bp.route('/', methods=['GET'])
 def get_user_profile():
+    """Giriş yapmış kullanıcının kendi tam profilini getirir."""
     try:
-        auth_header = request.headers.get('Authorization', '')
-        if not auth_header or not auth_header.startswith('Bearer '):
-            return jsonify(error='Missing or invalid Authorization header'), 401
+        # 1. Kullanıcıyı doğrula
+        auth_header = request.headers.get('Authorization')
+        if not auth_header or 'Bearer ' not in auth_header:
+            return jsonify(error="Authorization header is missing or malformed"), 401
+        
+        jwt = auth_header.split(" ")[1]
+        user_res = supabase.auth.get_user(jwt)
+        
+        if user_res.user is None:
+            return jsonify(error="Invalid or expired token"), 401
+        
+        user_id = user_res.user.id
+        
+        # 2. Veritabanı fonksiyonunu çağır
+        response = supabase.rpc('get_full_profile_by_id', {'p_user_id': user_id}).execute()
 
-        token = auth_header.split(' ', 1)[1].strip()
-        # get_user dönüş şekline göre kontrol
-        user_res = supabase.auth.get_user(token)
-        user = None
-        if hasattr(user_res, 'user'):
-            user = user_res.user
-        elif isinstance(user_res, dict):
-            user = user_res.get('user') or user_res.get('data')
+        if not response.data or not response.data[0].get('profile'):
+            return jsonify(error="Profile not found for current user"), 404
 
-        if not user:
-            return jsonify(error='Invalid or expired token'), 401
+        return jsonify(response.data[0])
+        
+    except Exception as e:
+        print(f"Error in get_user_profile: {e}")
+        return jsonify(error="An internal server error occurred"), 500
 
-        # RPC çağır ve normalize et
-        rpc_res = supabase.rpc('get_user_profile_details', {'p_user_id': user.id}).execute()
-        profile_data = None
-        if getattr(rpc_res, 'data', None):
-            profile_data = rpc_res.data
-        elif isinstance(rpc_res, dict):
-            profile_data = rpc_res.get('data') or rpc_res.get('body') or None
+# HERKESE AÇIK PROFİL (LİDERLİK TABLOSU İÇİN)
+@profile_bp.route('/<username>', methods=['GET'])
+def get_public_profile(username):
+    """Username'e göre bir kullanıcının herkese açık tam profilini getirir."""
+    try:
+        # 1. Önce username'den user_id'yi bul
+        user_id_res = supabase.table('profiles').select('id').eq('username', username).single().execute()
+        if not user_id_res.data:
+            return jsonify(error=f"Profile not found for username: {username}"), 404
+        
+        user_id = user_id_res.data['id']
+        
+        # 2. Veritabanı fonksiyonunu çağır
+        response = supabase.rpc('get_full_profile_by_id', {'p_user_id': user_id}).execute()
 
-        # Fallback direct query
-        if not profile_data:
-            current_app.logger.info('[profile] RPC returned empty, falling back to profiles table')
-            direct = supabase.table('profiles').select('id, username, avatar_url, total_score, mixed_rush_highscore').eq('id', user.id).single().execute()
-            if getattr(direct, 'data', None):
-                return jsonify(direct.data), 200
-            elif isinstance(direct, dict) and direct.get('data'):
-                return jsonify(direct.get('data')), 200
-            else:
-                return jsonify(error='Profile not found for user'), 404
+        if not response.data or not response.data[0].get('profile'):
+            return jsonify(error="Profile data incomplete for user"), 404
 
-        # profile_data olabilir: liste veya tek obje
-        profile_obj = profile_data[0] if isinstance(profile_data, list) and profile_data else profile_data
-
-        # ensure total_score present
-        if profile_obj.get('total_score') is None:
-            try:
-                ts_res = supabase.table('profiles').select('total_score').eq('id', user.id).single().execute()
-                if getattr(ts_res, 'data', None):
-                    profile_obj['total_score'] = ts_res.data.get('total_score')
-                elif isinstance(ts_res, dict) and ts_res.get('data'):
-                    profile_obj['total_score'] = (ts_res.get('data') or {}).get('total_score')
-            except Exception as e:
-                current_app.logger.exception('[profile] total_score fallback failed')
-
-        # ensure avatar_url present
-        if profile_obj.get('avatar_url') is None:
-            try:
-                av_res = supabase.table('profiles').select('avatar_url').eq('id', user.id).single().execute()
-                if getattr(av_res, 'data', None):
-                    profile_obj['avatar_url'] = av_res.data.get('avatar_url')
-                elif isinstance(av_res, dict) and av_res.get('data'):
-                    profile_obj['avatar_url'] = (av_res.get('data') or {}).get('avatar_url')
-            except Exception as e:
-                current_app.logger.exception('[profile] avatar_url fallback failed')
-
-        return jsonify(profile_obj), 200
-
-    except Exception:
-        current_app.logger.exception('Unhandled error in get_user_profile')
-        return jsonify(error='An internal server error occurred'), 500
-
+        return jsonify(response.data[0])
+    except Exception as e:
+        print(f"Error in get_public_profile: {e}")
+        return jsonify(error="An internal server error occurred"), 500
