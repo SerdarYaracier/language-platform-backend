@@ -46,122 +46,84 @@ def submit_score():
     user, err = get_user_from_request(request)
     if err: return err
 
-    data = request.get_json()
-    print(f"[submit_score] Received data: {data}")  # DEBUG: log incoming data
-    
-    # Be flexible with field names that frontend might send
-    level = data.get('level')
-    game_slug = data.get('gameSlug') or data.get('game') or data.get('gameType')
-    category_slug = data.get('categorySlug') or data.get('category')
-    language_code = data.get('language') or data.get('lang') or 'en'  # default to 'en'
-
-    print(f"[submit_score] Parsed fields - level: {level}, gameSlug: {game_slug}, categorySlug: {category_slug}, language: {language_code}")  # DEBUG
-
-    # For now, make gameSlug optional since existing frontends might not send it
-    if not all([level is not None, category_slug, language_code]):
-        missing_fields = []
-        if level is None: missing_fields.append('level')
-        if not category_slug: missing_fields.append('categorySlug/category')
-        if not language_code: missing_fields.append('language/lang')
-        print(f"[submit_score] Missing fields: {missing_fields}")  # DEBUG
-        return jsonify(error=f"Missing required fields: {', '.join(missing_fields)}"), 400
-    
-    # Kazanılan puanı belirle (örneğin sabit 5 puan veya dinamik)
-    points_to_add = 5 # Her doğru cevap için 5 puan
-
     try:
-        # Kategori ID'sini bul
-        category_response = supabase.table('categories').select('id').eq('slug', category_slug).single().execute()
-        if not category_response.data:
-            return jsonify(error=f"Category '{category_slug}' not found."), 404
-        category_id = category_response.data['id']
+        data = request.get_json() or {}
+        print(f"[submit_score] Received payload: {data}")
+        level = data.get('level')
+        game_slug = data.get('gameSlug') or data.get('game') or data.get('gameType')
+        category_slug = data.get('categorySlug') or data.get('category')
+        language_code = data.get('language') or data.get('lang') or 'en'
+        points_to_add = data.get('points', 5)
 
-        # DEBUG: Log user ID and what we're passing to RPC
-        user_id = user.id if hasattr(user, 'id') else user.get('id')
-        print(f"[submit_score] User ID: {user_id} (type: {type(user_id)})")
-        print(f"[submit_score] Category ID: {category_id}")
-        
-        # Create a user-authenticated supabase client using the token from request
-        auth_header = request.headers.get('Authorization')
-        token = auth_header.split(' ', 1)[1].strip()
-        if token.startswith('{'):
-            try:
-                import json
-                parsed = json.loads(token)
-                token = parsed.get('access_token') or parsed.get('accessToken') or parsed.get('token') or (parsed.get('data') or {}).get('access_token')
-            except Exception:
-                pass
-        
-        # Create authenticated client - this will have proper RLS context
-        print(f"[submit_score] Creating user-authenticated client...")
-        user_supabase = create_client(url, key)
-        user_supabase.auth.session = {'access_token': token, 'refresh_token': '', 'user': user}  # Set user session properly
-        
-        print(f"[submit_score] About to call upsert_level_progress RPC with user context")
+        missing = []
+        if level is None:
+            missing.append('level')
+        if not category_slug:
+            missing.append('categorySlug')
+        if missing:
+            print(f"[submit_score] Missing fields: {missing}")
+            return jsonify(error=f"Missing required fields: {', '.join(missing)}"), 400
 
-        # YENİ: user_level_progress tablosunu güncelle
-        # Kullanıcının o kategori, dil ve seviyedeki skorunu artırıyoruz.
-        user_supabase.rpc('upsert_level_progress', {
-            'p_user_id': user_id,
-            'p_category_id': category_id,
+        cat_res = supabase.table('categories').select('id').eq('slug', category_slug).single().execute()
+        if not cat_res.data:
+            return jsonify(error=f"Category with slug '{category_slug}' not found."), 404
+        category_id = cat_res.data['id']
+
+        # 1. Seviye bazlı skoru güncelle
+        supabase.rpc('upsert_level_progress', {
+            'p_user_id': user.id,
+            'p_category_id': int(category_id),
             'p_language_code': language_code,
-            'p_level': int(level), # Integer'a çevirdiğimizden emin ol
-            'p_score_increment': points_to_add
+            'p_level': int(level),
+            'p_score_increment': int(points_to_add)
         }).execute()
 
-        print(f"[submit_score] RPC upsert_level_progress completed successfully")
+        # 2. Toplam skoru yeniden hesapla (SADECE KULLANICI ID'si gönderiliyor)
+        # `profiles.total_score` INTEGER olduğu için dil bazlı parametreye gerek yok.
+        supabase.rpc('recalculate_total_score_for_user', {
+            'p_user_id': user.id
+        }).execute()
 
-        # Toplam skoru dil bazlı yeniden hesapla (Profiles tablosu için)
-        try:
-            user_supabase.rpc('recalculate_total_score_for_user', {
-                'p_user_id': user_id,
-                'p_language_code': language_code
-            }).execute()
-            print(f"[submit_score] RPC recalculate_total_score_for_user completed successfully")
-        except Exception as recalc_error:
-            print(f"[submit_score] Warning: recalculate_total_score_for_user failed: {recalc_error}")
-            # Don't fail the entire request if total score calculation fails
-            # The level progress was successfully updated, which is the main goal
+        # 3. Madalyaları kontrol et
+        # Eğer `check_and_award_achievements_for_user` fonksiyonunuz varsa, bu çağrı kalabilir.
+        # supabase.rpc('check_and_award_achievements_for_user', {'p_user_id': user.id}).execute()
 
-        # Madalya kontrolü vb. (bu kısım hala aynı kalabilir veya dil bazlı güncellenebilir)
-        # Şimdilik sadece puanı kaydettiğimizden emin olalım.
-
-        return jsonify(message="Score submitted and progress updated successfully."), 200
+        return jsonify(message="Score updated successfully"), 200
 
     except Exception as e:
-        print(f"An error occurred in submit_score: {e}")
+        print(f"Error in submit_score: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify(error="An internal server error occurred."), 500
 
 @progress_bp.route('/submit-mixed-rush-score', methods=['POST'])
 def submit_mixed_rush_score():
-    print(f"[submit_mixed_rush_score] Function called - checking user...")  # DEBUG: very early
+    print(f"[submit_mixed_rush_score] Function called - checking user...")
     user, err = get_user_from_request(request)
     if err: 
-        print(f"[submit_mixed_rush_score] User auth failed: {err}")  # DEBUG
+        print(f"[submit_mixed_rush_score] User auth failed: {err}")
         return err
 
     data = request.get_json()
-    print(f"[submit_mixed_rush_score] Received data: {data}")  # DEBUG: log incoming data
+    print(f"[submit_mixed_rush_score] Received data: {data}")
     
     final_score = data.get('score')
-    language_code = data.get('language') or data.get('lang') or 'en'  # Be flexible with field names
+    # language_code burada artık doğrudan kullanılmayacak, ancak frontend'den gelmesi problem değil
+    # language_code = data.get('language') or data.get('lang') or 'en' 
 
-    print(f"[submit_mixed_rush_score] Parsed fields - score: {final_score}, language: {language_code}")  # DEBUG
+    print(f"[submit_mixed_rush_score] Parsed fields - score: {final_score}") # language_code'u logdan çıkarabiliriz
 
-    if not all([final_score is not None, language_code]):
-        missing_fields = []
-        if final_score is None: missing_fields.append('score')
-        if not language_code: missing_fields.append('language/lang')
-        print(f"[submit_mixed_rush_score] Missing fields: {missing_fields}")  # DEBUG
-        return jsonify(error=f"Missing required fields: {', '.join(missing_fields)}"), 400
+    if final_score is None: # Sadece skoru kontrol ediyoruz
+        print(f"[submit_mixed_rush_score] Missing field: score")
+        return jsonify(error=f"Missing required field: score"), 400
     
     try:
-        # Use same user ID extraction pattern as submit_score
         user_id = user.id if hasattr(user, 'id') else user.get('id')
         print(f"[submit_mixed_rush_score] User ID: {user_id} (type: {type(user_id)})")
         print(f"[submit_mixed_rush_score] About to call update_mixed_rush_highscore RPC")
         
-        # Create user-authenticated client like in submit_score
+        # Eğer bu kısımda problem yaşanıyorsa, `user_supabase` yerine global `supabase` client kullanmayı deneyebiliriz.
+        # Ancak RLS politikaları nedeniyle `user_supabase` ile devam etmek genellikle daha güvenlidir.
         auth_header = request.headers.get('Authorization')
         token = auth_header.split(' ', 1)[1].strip()
         if token.startswith('{'):
@@ -172,17 +134,36 @@ def submit_mixed_rush_score():
             except Exception:
                 pass
         
-        user_supabase = create_client(url, key)
+        user_supabase = create_client(os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY"))
         user_supabase.auth.session = {'access_token': token, 'refresh_token': '', 'user': user}
         
-        user_supabase.rpc('update_mixed_rush_highscore', {
-            'p_user_id': user_id,
-            'p_language_code': language_code,
-            'p_new_score': int(final_score)
-        }).execute()
-        
-        print(f"[submit_mixed_rush_score] RPC update_mixed_rush_highscore completed successfully")
-        return jsonify(message="Mixed Rush highscore updated successfully."), 200
+        try:
+            mixed_rush_result = user_supabase.rpc('update_mixed_rush_highscore', {
+                'p_user_id': user_id,
+                # 'p_language_code': language_code, # BU SATIR SİLİNMELİ
+                'p_new_score': int(final_score)
+            }).execute()
+            
+            print(f"[submit_mixed_rush_score] RPC update_mixed_rush_highscore completed successfully")
+            print(f"[submit_mixed_rush_score] Mixed rush result: {mixed_rush_result.data}")
+            
+            # Doğrulama için profiles tablosundan `mixed_rush_highscore` değerini çek
+            profile_check = user_supabase.table('profiles').select('mixed_rush_highscore').eq('id', user_id).execute()
+            if profile_check.data:
+                current_mixed_rush_highscore = profile_check.data[0]['mixed_rush_highscore']
+                print(f"[submit_mixed_rush_score] Verified mixed rush highscore: {current_mixed_rush_highscore}")
+                
+            return jsonify(message="Mixed Rush highscore updated successfully."), 200
+            
+        except Exception as mixed_rush_error:
+            print(f"[submit_mixed_rush_score] ERROR: update_mixed_rush_highscore failed: {mixed_rush_error}")
+            print(f"[submit_mixed_rush_score] Error type: {type(mixed_rush_error)}")
+            if hasattr(mixed_rush_error, 'message'):
+                print(f"[submit_mixed_rush_score] Error message: {mixed_rush_error.message}")
+            return jsonify(error="Failed to update Mixed Rush highscore"), 500
+            
     except Exception as e:
         print(f"An error occurred in submit_mixed_rush_score: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify(error="An internal server error occurred."), 500

@@ -34,13 +34,26 @@ def get_user_profile():
         
         user_id = user_res.user.id
         
-        # 2. Veritabanı fonksiyonunu çağır
-        response = supabase.rpc('get_full_profile_by_id', {'p_user_id': user_id}).execute()
+        # 2. Direkt profiles tablosundan profil bilgisini al
+        profile_response = supabase.table('profiles').select('*').eq('id', user_id).single().execute()
 
-        if not response.data or not response.data[0].get('profile'):
+        if not profile_response.data:
             return jsonify(error="Profile not found for current user"), 404
 
-        return jsonify(response.data[0])
+        profile_data = profile_response.data
+        
+        # 3. User level progress bilgilerini de ekle
+        try:
+            progress_response = supabase.table('user_level_progress').select('*').eq('user_id', user_id).execute()
+            profile_data['level_progress'] = progress_response.data if progress_response.data else []
+        except Exception as progress_error:
+            print(f"Warning: Could not fetch level progress: {progress_error}")
+            profile_data['level_progress'] = []
+
+        return jsonify({
+            'profile': profile_data,
+            'user_progress': profile_data.get('level_progress', [])
+        })
         
     except Exception as e:
         print(f"Error in get_user_profile: {e}")
@@ -58,13 +71,26 @@ def get_public_profile(username):
         
         user_id = user_id_res.data['id']
         
-        # 2. Veritabanı fonksiyonunu çağır
-        response = supabase.rpc('get_full_profile_by_id', {'p_user_id': user_id}).execute()
+        # 2. Direkt profiles tablosundan profil bilgisini al
+        profile_response = supabase.table('profiles').select('*').eq('id', user_id).single().execute()
 
-        if not response.data or not response.data[0].get('profile'):
+        if not profile_response.data:
             return jsonify(error="Profile data incomplete for user"), 404
 
-        return jsonify(response.data[0])
+        profile_data = profile_response.data
+        
+        # 3. User level progress bilgilerini de ekle (public data)
+        try:
+            progress_response = supabase.table('user_level_progress').select('category_id, language_code, level, score').eq('user_id', user_id).execute()
+            profile_data['level_progress'] = progress_response.data if progress_response.data else []
+        except Exception as progress_error:
+            print(f"Warning: Could not fetch level progress: {progress_error}")
+            profile_data['level_progress'] = []
+
+        return jsonify({
+            'profile': profile_data,
+            'user_progress': profile_data.get('level_progress', [])
+        })
     except Exception as e:
         print(f"Error in get_public_profile: {e}")
         return jsonify(error="An internal server error occurred"), 500
