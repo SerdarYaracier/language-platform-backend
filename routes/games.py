@@ -1,6 +1,7 @@
-from flask import Blueprint, app, jsonify, request
+import os
 import random
 import traceback
+from flask import Blueprint, app, jsonify, request
 
 from .extensions import supabase
 games_bp = Blueprint('games_bp', __name__, url_prefix='/api/games')
@@ -335,28 +336,96 @@ def get_mixed_rush_question():
     
 @games_bp.route("/<game_slug>/<category_slug>/levels")
 def get_levels_for_category(game_slug, category_slug):
-    """Belirli bir oyun ve kategori için mevcut olan tüm seviyeleri listeler."""
-    try:
-        # Oyun ve kategori ID'lerini bul
-        game_type_response = supabase.table('game_types').select('id').eq('slug', game_slug).single().execute()
-        category_response = supabase.table('categories').select('id').eq('slug', category_slug).single().execute()
+    """Belirli bir oyun ve kategori için mevcut olan tüm seviyeleri listeler ve kilit durumunu döner."""
+    # Auth helper function
+    def get_user_from_request(current_request):
+        auth_header = current_request.headers.get('Authorization')
+        if not auth_header or ' ' not in auth_header:
+            return None, (jsonify(error="Authorization header missing or malformed"), 401)
+        token = auth_header.split(' ', 1)[1].strip()
+        # tolerate JSON-wrapped token
+        if token.startswith('{'):
+            try:
+                import json
+                parsed = json.loads(token)
+                token = parsed.get('access_token') or parsed.get('accessToken') or parsed.get('token') or (parsed.get('data') or {}).get('access_token')
+            except Exception:
+                pass
+        try:
+            user_resp = supabase.auth.get_user(token)
+            user = None
+            if hasattr(user_resp, 'user'):
+                user = user_resp.user
+            elif isinstance(user_resp, dict):
+                user = user_resp.get('user') or (user_resp.get('data') and user_resp['data'].get('user'))
+            
+            if not user:
+                return None, (jsonify(error="Invalid or expired token"), 401)
+            
+            return user, None
+        except Exception as e:
+            print(f"Auth validation error in get_levels_for_category: {e}")
+            return None, (jsonify(error="Failed to validate token"), 401)
+    
+    # Bu endpoint artık kimlik doğrulaması gerektiriyor
+    user, err = get_user_from_request(request)
+    if err:
+        return err
 
-        if not game_type_response.data or not category_response.data:
-            return jsonify(error="Game or Category not found"), 404
-        
-        game_type_id = game_type_response.data['id']
+    # Kullanıcının seçtiği dili al
+    language_code = request.args.get('lang', 'en')
+
+    try:
+        # Kategori ID'sini bul
+        category_response = supabase.table('categories').select('id').eq('slug', category_slug).single().execute()
+        if not category_response.data:
+            return jsonify(error=f"Category '{category_slug}' not found."), 404
         category_id = category_response.data['id']
 
-        # game_items tablosundan bu oyuna ve kategoriye ait olan tüm benzersiz seviyeleri çek
-        # DISTINCT, tekrar eden seviye numaralarını (1, 1, 1, 1) engeller ve sadece [1] döndürür.
-        levels_response = supabase.table('game_items').select('level', count='exact').eq('game_type_id', game_type_id).eq('category_id', category_id).execute()
-        
-        # Gelen veriden sadece seviye numaralarını alıp, benzersiz bir liste oluşturuyoruz
-        if levels_response.data:
-            unique_levels = sorted(list(set([item['level'] for item in levels_response.data])))
-            return jsonify(unique_levels)
-        else:
+        # 1. Bu kategoride var olan tüm seviyeleri (game_items tablosundan) bul
+        all_levels_res = supabase.table('game_items').select('level').eq('category_id', category_id).order('level').execute()
+        if not all_levels_res.data:
             return jsonify([])
+
+        # Tekrar eden seviyeleri temizle ve sırala
+        all_levels = sorted(list(set([item['level'] for item in all_levels_res.data])))
+
+        # 2. Kullanıcının bu kategori, bu dil için tamamladığı en yüksek seviyeyi bul
+        UNLOCK_THRESHOLD = int(os.environ.get('UNLOCK_THRESHOLD', 25))
+
+        highest_completed_res = supabase.table('user_level_progress') \
+                                        .select('level') \
+                                        .eq('user_id', user.id if hasattr(user, 'id') else user.get('id')) \
+                                        .eq('category_id', category_id) \
+                                        .eq('language_code', language_code) \
+                                        .gte('score', UNLOCK_THRESHOLD) \
+                                        .order('level', desc=True) \
+                                        .limit(1) \
+                                        .execute()
+        highest_completed_level = 0
+        if highest_completed_res.data:
+            highest_completed_level = highest_completed_res.data[0]['level']
+
+        # 3. Her seviye için kilit durumunu belirle
+        level_status_list = []
+        for level in all_levels:
+            is_unlocked = False
+            unlock_condition = ""
+            if level == 1:
+                is_unlocked = True
+            elif level <= highest_completed_level + 1:
+                is_unlocked = True
+            else:
+                is_unlocked = False
+                unlock_condition = f"Complete Level {level - 1} ({language_code.upper()}) to unlock."
+
+            level_status_list.append({
+                "level": level,
+                "is_unlocked": is_unlocked,
+                "unlock_condition": unlock_condition
+            })
+
+        return jsonify(level_status_list)
 
     except Exception as e:
         print(f"An error occurred in get_levels_for_category: {e}")

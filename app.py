@@ -1,8 +1,9 @@
 import os
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 from dotenv import load_dotenv
 from supabase import create_client, Client
+from extensions import supabase
 
 
 # .env dosyasındaki ortam değişkenlerini yükler
@@ -27,6 +28,7 @@ from routes.progress import progress_bp
 from routes.achievements import achievements_bp
 from routes.leaderboard import leaderboard_bp
 from routes.social import social_bp
+from routes.profile import upload_avatar as profile_upload_avatar_compat
 
 
 
@@ -38,6 +40,19 @@ app.register_blueprint(progress_bp)
 app.register_blueprint(achievements_bp)
 app.register_blueprint(leaderboard_bp)
 app.register_blueprint(social_bp)
+
+
+# Top-level compatibility route so frontend can call /api/upload-avatar
+@app.route('/api/upload-avatar', methods=['POST', 'OPTIONS'])
+def upload_avatar_root():
+    # ensure preflight returns OK
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+    # forward POST handling to the profile blueprint's handler
+    return profile_upload_avatar_compat()
+
+
+
 
 # --- Ana Test Route'u ---
 
