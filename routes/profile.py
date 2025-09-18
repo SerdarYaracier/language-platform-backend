@@ -21,7 +21,6 @@ profile_bp = Blueprint('profile_bp', __name__, url_prefix='/api/profile')
 def get_user_profile():
     """Giriş yapmış kullanıcının kendi tam profilini getirir."""
     try:
-        # 1. Kullanıcıyı doğrula
         auth_header = request.headers.get('Authorization')
         if not auth_header or 'Bearer ' not in auth_header:
             return jsonify(error="Authorization header is missing or malformed"), 401
@@ -34,29 +33,21 @@ def get_user_profile():
         
         user_id = user_res.user.id
         
-        # 2. Direkt profiles tablosundan profil bilgisini al
-        profile_response = supabase.table('profiles').select('*').eq('id', user_id).single().execute()
+        # 2. Veritabanı fonksiyonunu çağır
+        response = supabase.rpc('get_full_profile_by_id', {'p_user_id': user_id}).execute()
 
-        if not profile_response.data:
-            return jsonify(error="Profile not found for current user"), 404
-
-        profile_data = profile_response.data
+        # Supabase RPC'leri liste içinde tek bir dict döndürür
+        if not response.data or not response.data[0]:
+            return jsonify(error="Profile not found or data incomplete for current user"), 404
         
-        # 3. User level progress bilgilerini de ekle
-        try:
-            progress_response = supabase.table('user_level_progress').select('*').eq('user_id', user_id).execute()
-            profile_data['level_progress'] = progress_response.data if progress_response.data else []
-        except Exception as progress_error:
-            print(f"Warning: Could not fetch level progress: {progress_error}")
-            profile_data['level_progress'] = []
-
-        return jsonify({
-            'profile': profile_data,
-            'user_progress': profile_data.get('level_progress', [])
-        })
+        # RPC'den dönen veriyi doğrudan JSON olarak gönder
+        # Bu, profile, game_scores ve achievements'ı içeren bir JSON objesi olacaktır.
+        return jsonify(response.data[0])
         
     except Exception as e:
         print(f"Error in get_user_profile: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify(error="An internal server error occurred"), 500
 
 # HERKESE AÇIK PROFİL (LİDERLİK TABLOSU İÇİN)
@@ -71,28 +62,18 @@ def get_public_profile(username):
         
         user_id = user_id_res.data['id']
         
-        # 2. Direkt profiles tablosundan profil bilgisini al
-        profile_response = supabase.table('profiles').select('*').eq('id', user_id).single().execute()
+        # 2. Veritabanı fonksiyonunu çağır
+        response = supabase.rpc('get_full_profile_by_id', {'p_user_id': user_id}).execute()
 
-        if not profile_response.data:
+        if not response.data or not response.data[0]:
             return jsonify(error="Profile data incomplete for user"), 404
 
-        profile_data = profile_response.data
-        
-        # 3. User level progress bilgilerini de ekle (public data)
-        try:
-            progress_response = supabase.table('user_level_progress').select('category_id, language_code, level, score').eq('user_id', user_id).execute()
-            profile_data['level_progress'] = progress_response.data if progress_response.data else []
-        except Exception as progress_error:
-            print(f"Warning: Could not fetch level progress: {progress_error}")
-            profile_data['level_progress'] = []
-
-        return jsonify({
-            'profile': profile_data,
-            'user_progress': profile_data.get('level_progress', [])
-        })
+        # RPC'den dönen veriyi doğrudan JSON olarak gönder
+        return jsonify(response.data[0])
     except Exception as e:
         print(f"Error in get_public_profile: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify(error="An internal server error occurred"), 500
     
 

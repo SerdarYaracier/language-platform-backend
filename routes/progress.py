@@ -86,8 +86,9 @@ def submit_score():
 
         # 3. Madalyaları kontrol et
         # Eğer `check_and_award_achievements_for_user` fonksiyonunuz varsa, bu çağrı kalabilir.
-        # supabase.rpc('check_and_award_achievements_for_user', {'p_user_id': user.id}).execute()
-
+         # 3. YENİ: Achievement'ları kontrol et ve ver
+        print(f"[submit_score] Calling check_and_award_achievements for user {user.id}")
+        supabase.rpc('check_and_award_achievements', {'p_user_id': user.id}).execute()
         return jsonify(message="Score updated successfully"), 200
 
     except Exception as e:
@@ -146,6 +147,9 @@ def submit_mixed_rush_score():
             
             print(f"[submit_mixed_rush_score] RPC update_mixed_rush_highscore completed successfully")
             print(f"[submit_mixed_rush_score] Mixed rush result: {mixed_rush_result.data}")
+
+            print(f"[submit_mixed_rush_score] Calling check_and_award_achievements for user {user_id}")
+            supabase.rpc('check_and_award_achievements', {'p_user_id': user_id}).execute()
             
             # Doğrulama için profiles tablosundan `mixed_rush_highscore` değerini çek
             profile_check = user_supabase.table('profiles').select('mixed_rush_highscore').eq('id', user_id).execute()
