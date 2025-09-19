@@ -111,9 +111,59 @@ def get_game_leaderboard(game_slug):
                 raise Exception("RPC missing avatar_url")
                 
         except:
-            # Fallback: This would need category_progress table join - simplified for now
-            # You might need to implement this based on your exact schema
-            return jsonify(error=f"Game leaderboard for '{game_slug}' requires schema details"), 501
+            # Fallback: implement aggregation in Python using existing tables
+            try:
+                # 1) find game_type id by slug
+                gt_res = supabase.table('game_types').select('id, slug, name').eq('slug', game_slug).single().execute()
+                if not gt_res.data:
+                    return jsonify([])
+                gt_id = gt_res.data['id']
+
+                # 2) get categories for this game type
+                cats_res = supabase.table('categories').select('id').eq('game_type_id', gt_id).execute()
+                cat_ids = [c['id'] for c in (cats_res.data or [])]
+                if not cat_ids:
+                    return jsonify([])
+
+                # 3) fetch user_level_progress rows for these categories
+                progress_res = supabase.table('user_level_progress').select('user_id, score').in_('category_id', cat_ids).execute()
+                rows = progress_res.data or []
+
+                # 4) aggregate scores per user
+                totals = {}
+                for r in rows:
+                    uid = r.get('user_id')
+                    try:
+                        s = int(r.get('score') or 0)
+                    except Exception:
+                        s = 0
+                    totals[uid] = totals.get(uid, 0) + s
+
+                if not totals:
+                    return jsonify([])
+
+                # 5) fetch profiles for these users
+                user_ids = list(totals.keys())
+                profiles_res = supabase.table('profiles').select('id, username, avatar_url').in_('id', user_ids).execute()
+                profiles = {p['id']: p for p in (profiles_res.data or [])}
+
+                # 6) build leaderboard list
+                result = []
+                for uid, score in totals.items():
+                    prof = profiles.get(uid, {})
+                    result.append({
+                        'id': uid,
+                        'username': prof.get('username') or None,
+                        'avatar_url': prof.get('avatar_url') or None,
+                        'total_score_for_game': int(score)
+                    })
+
+                # sort and limit
+                result.sort(key=lambda x: x['total_score_for_game'], reverse=True)
+                result = result[:50]
+                data = result
+            except Exception as e:
+                return jsonify(error=str(e)), 500
             
         # sanitize
         for item in data:
