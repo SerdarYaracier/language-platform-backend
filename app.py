@@ -17,7 +17,7 @@ app = Flask(__name__)
 CORS(app, resources={r"/api/*": {
     "origins": ["http://localhost:5173", "http://127.0.0.1:5173"],
     "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    "allow_headers": ["Content-Type", "Authorization"],
+    "allow_headers": ["Content-Type", "Authorization", "X-Requested-With", "Accept", "Origin", "Referer", "User-Agent"],
     "supports_credentials": True
 }})
 
@@ -28,6 +28,7 @@ from routes.progress import progress_bp
 from routes.achievements import achievements_bp
 from routes.leaderboard import leaderboard_bp
 from routes.social import social_bp
+from routes.duel import duel_bp
 from routes.profile import upload_avatar as profile_upload_avatar_compat
 
 
@@ -40,6 +41,7 @@ app.register_blueprint(progress_bp)
 app.register_blueprint(achievements_bp)
 app.register_blueprint(leaderboard_bp)
 app.register_blueprint(social_bp)
+app.register_blueprint(duel_bp)
 
 
 # Top-level compatibility route so frontend can call /api/upload-avatar
