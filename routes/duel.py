@@ -86,6 +86,7 @@ def create_and_play_duel():
     challenger_time_taken = data.get('challenger_time_taken')
     challenger_answers = data.get('challenger_answers') # Cevaplar daha sonra kontrol için tutulabilir
     frontend_questions = data.get('questions', [])  # Frontend'ten gelen sorular
+    duel_language = data.get('duel_language', 'en')  # Challenger'ın seçtiği dil
 
     if not all([challenged_id, difficulty_level is not None, challenger_score is not None, challenger_time_taken is not None, challenger_answers is not None]):
         return jsonify(error="Missing required duel parameters"), 400
@@ -141,6 +142,7 @@ def create_and_play_duel():
             'challenger_id': str(user_id), # Supabase UUID'yi string bekler
             'challenged_id': str(challenged_id),
             'difficulty_level': difficulty_level,
+            'duel_language': duel_language,  # Challenger'ın seçtiği dil kaydediliyor
             'status': 'challenger_completed', # Challenger ilk oynamayı tamamladığı için
             'challenger_score': challenger_score,
             'challenger_time_taken': challenger_time_taken,
@@ -243,7 +245,7 @@ def get_duel_game_questions(duel_id):
 
     try:
         # Kullanıcının bu duel'in bir parçası olup olmadığını kontrol et
-        duel_check_response = supabase.table('duels').select('id, challenger_id, challenged_id, status').eq('id', str(duel_id)).single().execute()
+        duel_check_response = supabase.table('duels').select('id, challenger_id, challenged_id, status, duel_language').eq('id', str(duel_id)).single().execute()
         duel_check_data = duel_check_response.data
 
         if not duel_check_data:
@@ -255,6 +257,9 @@ def get_duel_game_questions(duel_id):
         # Eğer challenged oynayacaksa, challenger'ın tamamladığından emin ol
         if str(user_id) == duel_check_data['challenged_id'] and duel_check_data['status'] != 'challenger_completed':
             return jsonify(error="Challenger has not completed this duel yet"), 400
+
+        # Duel'in belirlenen dilini al
+        duel_language = duel_check_data.get('duel_language', 'en')
 
         # Duel'in sorularını ve detaylarını çek
         response = supabase.table('duel_questions').select(
@@ -281,7 +286,10 @@ def get_duel_game_questions(duel_id):
                     # Frontend'e sadece gösterilecek verileri gönderiyoruz.
                 })
 
-        return jsonify(questions=formatted_questions), 200
+        return jsonify({
+            "questions": formatted_questions,
+            "duel_language": duel_language  # Frontend'e duel dilini bildiriyoruz
+        }), 200
 
     except Exception as e:
         print(f"Error fetching duel questions for game: {e}")
